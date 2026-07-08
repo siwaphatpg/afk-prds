@@ -60,19 +60,36 @@ This skill reads sibling skills via relative paths (`../<skill>/SKILL.md`) and c
 
 ## Install
 
-1. Install the five skills from the table above into your Claude Code skills directory — e.g. `~/.claude/skills/` or `~/.agents/skills/` — each as its own folder:
-   ```
-   skills/
-     afk-prds/SKILL.md      ← from this repo
-     tdd/SKILL.md
-     work-on-issues/SKILL.md
-     to-prd/SKILL.md
-     to-issues/SKILL.md
-   ```
-2. (If your skills dir is `~/.agents/skills/` and Claude Code loads from `~/.claude/skills/`, symlink each folder, e.g. `ln -s ~/.agents/skills/afk-prds ~/.claude/skills/afk-prds`.)
-3. Start a Claude Code session in your project repo.
-4. Run `/setup-matt-pocock-skills` once if not already configured.
-5. `/to-prd` → `/to-issues` → `/afk-prds`.
+This repo is compatible with [skills.sh](https://github.com/mattpocock/skills) (the `skills` npm CLI) — the same installer `utarn/review-skill` uses. Install with one command:
+
+```
+npx skills@latest add siwaphatpg/afk-prds
+```
+
+The CLI clones the repo, finds `skills/afk-prds/SKILL.md`, installs it into your skills directory, and symlinks it into Claude Code for you. No plugin manifest or npm publish needed — the `skills/<name>/SKILL.md` layout is all it requires.
+
+Then install the sibling skills the same way:
+
+```
+npx skills@latest add mattpocock/skills       # tdd, to-prd, to-issues
+npx skills@latest add utarn/review-skill      # work-on-issues (and find-mismatch)
+```
+
+After install, the five skills live side-by-side (the `../tdd/SKILL.md` relative paths require them to be siblings on disk, which the CLI handles):
+
+```
+skills/
+  afk-prds/SKILL.md
+  tdd/SKILL.md
+  work-on-issues/SKILL.md
+  to-prd/SKILL.md
+  to-issues/SKILL.md
+```
+
+Then:
+1. Start a Claude Code session in your project repo.
+2. Run `/setup-matt-pocock-skills` once (configures issue tracker, triage labels, domain docs).
+3. `/to-prd` → `/to-issues` → `/afk-prds`.
 
 ## Usage
 
