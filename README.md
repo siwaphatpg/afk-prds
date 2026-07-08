@@ -4,17 +4,19 @@ A Claude Code skill that autonomously implements **PRD epics** and their `feat:`
 
 > AFK = "away from keyboard" — you kick it off, leave it unattended, and review the results when it's done.
 
+This skill is part of the **Matt Pocock engineering skills** ecosystem. It is **not self-contained** — see [Dependencies](#dependencies).
+
 ## What it does
 
 Composes two existing skills and leaves both untouched:
-- **`/tdd`** — the red-green-refactor practice (single canonical source of TDD rules).
-- **`/work-on-issues`** — the tracker/worktree/branch mechanics this adapts.
+- **`/tdd`** — the red-green-refactor practice (single canonical source of TDD rules, read live and injected into the sub-agent prompt).
+- **`/work-on-issues`** — the tracker/worktree/branch mechanics this skill adapts.
 
-**Pipeline:** this skill consumes the output of `/to-prd` -> `/to-issues`. A **PRD** issue (title `PRD:` or `PRD` label) is a parent epic; each **`feat:` issue** is a vertical tracer-bullet slice with `## What to build`, `## Acceptance criteria`, `## Blocked by`, and `## Parent`.
+**Pipeline:** this skill consumes the output of `/to-prd` → `/to-issues`. A **PRD** issue (title `PRD:` or `PRD` label) is a parent epic; each **`feat:` issue** is a vertical tracer-bullet slice with `## What to build`, `## Acceptance criteria`, `## Blocked by`, and `## Parent`.
 
 ## Flow
 
-1. You run `/to-prd` -> `/to-issues` to produce a PRD epic + `feat:` sub-issues.
+1. You run `/to-prd` → `/to-issues` to produce a PRD epic + `feat:` sub-issues.
 2. You run `/afk-prds` and **leave it unattended**.
 3. For each unblocked PRD, the skill:
    - Creates a worktree `.claude/worktrees/prd-<n>` on a new branch `prd-<n>-<slug>` off the default branch.
@@ -24,7 +26,7 @@ Composes two existing skills and leaves both untouched:
    - Commits each feat: `feat: resolve #<n> — <desc>` on the shared PRD branch.
 4. Runs the full test suite once, pushes the branch, **opens an MR** (`Closes #<prd>` + `Closes #<feat-…>`). **No auto-merge, no branch deletion, worktree left intact.**
 5. Moves to the next unblocked PRD; stops when none remain.
-6. **You** test locally on the worktree branch, then merge the MR on GitHub/GitLab — the tracker auto-closes the PRD + feats. You tell the skill (or it detects the closed PRD) -> it removes the worktree + deletes the local branch.
+6. **You** test locally on the worktree branch, then merge the MR on GitHub/GitLab — the tracker auto-closes the PRD + feats. You tell the skill (or it detects the closed PRD) → it removes the worktree + deletes the local branch.
 
 ## Core guarantees
 
@@ -34,18 +36,62 @@ Composes two existing skills and leaves both untouched:
 4. **Fully autonomous** — no interactive planning dialogue; the posted plan replaces `/tdd`'s step 1.
 5. **One PRD at a time** — PRDs sequential; within a PRD, feats sequential by dependency.
 
-## Policies
+## Dependencies
 
-- **HITL handling:** AFK default; skip HITL-marked issues (`hitl` label / `HITL` in body); needs-clarification -> skip with comment.
-- **Stuck-RED:** post `blocked` comment, skip it + transitive dependents, continue with independent feats, push a partial MR listing included vs skipped.
-- **Cross-PRD deps:** defer the dependent PRD until its blocker PRD is merged; skip with "blocked by unmerged PRD-X, merge and re-run."
-- **Trackers:** `gh` (GitHub) and `glab` (GitLab) both supported.
+This skill reads sibling skills via relative paths (`../<skill>/SKILL.md`) and consumes issues produced by other skills. You must install **all five** skills side-by-side in the same skills directory:
+
+| Skill | Role | Source |
+|-------|------|--------|
+| `/afk-prds` | this skill — autonomous TDD implementation of PRDs | this repo (`skills/afk-prds/`) |
+| `/tdd` | red-green-refactor practice; read live and injected | Matt Pocock's skills |
+| `/work-on-issues` | tracker/worktree/branch mechanics | [utarn/review-skill](https://github.com/utarn/review-skill) (`skills/work-on-issues/`) |
+| `/to-prd` | produces the PRD epic this skill consumes | Matt Pocock's skills |
+| `/to-issues` | produces the `feat:` sub-issues this skill consumes | Matt Pocock's skills |
+
+`/tdd`, `/to-prd`, and `/to-issues` are Matt Pocock engineering skills — obtain them from wherever you source the rest of that skill set (e.g. Matt Pocock's published skill collections). `/work-on-issues` and `find-mismatch` are also in [utarn/review-skill](https://github.com/utarn/review-skill).
+
+## Prerequisites
+
+- **Claude Code** installed and running.
+- **The five skills above** installed side-by-side in your skills directory (the `../tdd/SKILL.md` relative paths require the siblings to be siblings on disk).
+- **Per-repo setup already done** — run Matt Pocock's `/setup-matt-pocock-skills` in your project so the skills know your issue tracker, triage labels, and domain docs (`CONTEXT.md` / `docs/adr/`).
+- **`gh` or `glab` CLI** installed and authenticated to your tracker (GitHub or GitLab).
+- **A git repo** with a default branch, hosted on GitHub or GitLab.
 
 ## Install
 
-Copy `skills/afk-prds/` into your Claude Code skills directory (e.g. `~/.claude/skills/afk-prds/` or `~/.agents/skills/afk-prds/`), alongside a `/tdd` and `/work-on-issues` skill (the skill references `../tdd/SKILL.md` and `../work-on-issues/SKILL.md`).
+1. Install the five skills from the table above into your Claude Code skills directory — e.g. `~/.claude/skills/` or `~/.agents/skills/` — each as its own folder:
+   ```
+   skills/
+     afk-prds/SKILL.md      ← from this repo
+     tdd/SKILL.md
+     work-on-issues/SKILL.md
+     to-prd/SKILL.md
+     to-issues/SKILL.md
+   ```
+2. (If your skills dir is `~/.agents/skills/` and Claude Code loads from `~/.claude/skills/`, symlink each folder, e.g. `ln -s ~/.agents/skills/afk-prds ~/.claude/skills/afk-prds`.)
+3. Start a Claude Code session in your project repo.
+4. Run `/setup-matt-pocock-skills` once if not already configured.
+5. `/to-prd` → `/to-issues` → `/afk-prds`.
 
-Requires `/to-prd` and `/to-issues` to produce the PRD + feat issues it consumes.
+## Usage
+
+```
+/afk-prds              # process all unblocked PRDs, one at a time, then stop
+/afk-prds 42           # process only PRD #42 (still autonomous, single-PRD mode)
+/afk-prds cleanup 42   # after you've merged PRD #42's MR: remove its worktree + delete the local branch
+```
+
+Then: test locally on the worktree branch, merge the MR on your tracker, and the PRD + feats auto-close.
+
+## Policies
+
+- **HITL handling:** AFK default; skip HITL-marked issues (`hitl` label / `HITL` in body); needs-clarification → skip with comment.
+- **Stuck-RED:** post `blocked` comment, skip it + transitive dependents, continue with independent feats, push a partial MR listing included vs skipped.
+- **Cross-PRD deps:** defer the dependent PRD until its blocker PRD is merged; skip with "blocked by unmerged PRD-X, merge and re-run."
+- **Trackers:** `gh` (GitHub) and `glab` (GitLab) both supported.
+- **No `find-mismatch`** — TDD is the sole quality gate.
+- **Skill never closes issues** — your manual merge does, via the MR's `Closes` references.
 
 ## License
 
