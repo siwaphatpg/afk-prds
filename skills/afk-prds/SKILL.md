@@ -7,7 +7,8 @@ description: >
   do the issues", or wants to AFK-process the PRD/feat issues produced by
   /to-prd and /to-issues. Processes every unblocked PRD in the tracker, one at a
   time, then stops. Never auto-merges — you test locally and merge on the
-  tracker.
+  tracker. Supports a split-machine "workhorse" setup (plan on one machine,
+  implement on another) via the --workhorse flag.
 ---
 
 # AFK PRDs
@@ -20,11 +21,41 @@ This skill composes two existing skills and leaves both untouched:
 
 **Pipeline assumption:** issues come from [/to-prd](../to-prd/SKILL.md) → [/to-issues](../to-issues/SKILL.md). A **PRD** issue (title `PRD:` or `PRD` label) is a parent epic with Implementation/Testing Decisions. Each **`feat:` issue** is a vertical tracer-bullet slice with `## What to build`, `## Acceptance criteria`, `## Blocked by`, and `## Parent` → the PRD.
 
+## Modes
+
+Issue state lives on the **remote tracker**, so this skill is stateless across machines — every run re-fetches from `gh issue list` / `glab issue list`. Two deployment modes:
+
+- **Single-machine (default):** you plan (`/to-prd`, `/to-issues`), run `/afk-prds`, then test in the worktree on the same machine and merge on the tracker. The worktree stays after the MR opens so you can test in it.
+- **Workhorse (`--workhorse`):** you plan on one machine (laptop), a separate **workhorse** machine runs `/afk-prds --workhorse` unattended. The workhorse removes its worktree right after push + open MR (nothing local needs it); the branch stays on the remote. You **fetch the branch on your laptop**, test there, then merge on the tracker. The workhorse deletes its local branch after the PRD is merged (detected on the next run).
+
+Both modes share everything except **worktree cleanup timing** (see Phase 3/4).
+
+### Arguments
+
+```
+/afk-prds                # single-machine: process all unblocked PRDs, then stop
+/afk-prds 42             # single-machine: process only PRD #42
+/afk-prds --workhorse    # workhorse: process all unblocked PRDs, worktree cleaned after MR
+/afk-prds --workhorse 42 # workhorse: process only PRD #42
+/afk-prds cleanup 42     # after PRD #42's MR is merged: remove worktree + delete local branch (single-machine)
+                         # workhorse: worktree already gone; just delete local branch if present
+```
+
+### Workhorse prerequisites (in addition to the standard prerequisites)
+
+On the workhorse machine:
+- The five skills installed, `gh`/`glab` authenticated (its own token — Machine A's keyring auth does not transfer).
+- A clone of the repo with the default branch (worktrees branch off it).
+- `/setup-matt-pocock-skills` config — travels via git (committed `docs/agents/*` + `CLAUDE.md`/`AGENTS.md`), so a `git pull` on the workhorse gets it.
+- **`.env` files** — gitignored, so they do NOT travel via git. The workhorse must have its own `.env`/`.env.*` for the TDD test suite to run (DB creds, API keys). Without them, red-green fails on anything touching a DB/external service. This is a one-time workhorse setup task.
+
+On your laptop (for the test step): a clone of the repo, `gh`/`glab` authed, and the five skills if you also plan to run `/to-prd`/`/to-issues` there.
+
 ## Core guarantees (do not violate)
 
 1. **Per-PRD branch.** All `feat:` issues under one PRD accumulate as commits on a single new branch. One branch + one MR per PRD. Never commit feat work to the default branch.
 2. **TDD is the sole quality gate.** Every feat is implemented via red-green-refactor (vertical slices, behavior tests, refactor only while GREEN). There is no separate find-mismatch pass.
-3. **You merge, not the skill.** The skill pushes the branch, opens the MR, and stops. It never merges, never deletes the branch, never removes the worktree before you've merged, and never closes issues — your manual merge closes the PRD + feats via the MR's `Closes` references.
+3. **You merge, not the skill.** The skill pushes the branch, opens the MR, and stops. It never merges, never deletes the branch before you've merged, and never closes issues — your manual merge closes the PRD + feats via the MR's `Closes` references. Worktree removal is mode-dependent: kept after the MR in single-machine mode (it's your local test checkout); removed after the MR in workhorse mode (you test on your laptop by fetching the pushed branch).
 4. **Fully autonomous.** No interactive planning dialogue. The TDD plan (interface + behaviors) is derived from the PRD + feat issue and posted as a comment, replacing /tdd's interactive step 1.
 5. **One PRD at a time.** PRDs are processed strictly sequentially; within a PRD, feat issues are processed strictly sequentially by dependency. No parallel branches.
 
@@ -83,19 +114,21 @@ Branch every PRD off this default branch.
 
 4. **Parse `## Blocked by`** within each PRD's feat set to build a per-PRD `DEPS` map for ordering. Detect cross-PRD blockers (a feat blocked by a feat belonging to a different PRD) — see Cross-PRD Dependencies.
 
-5. **Let the user pick a scope:**
-   - No argument → process **all unblocked PRDs**, one at a time, then stop.
-   - A PRD number argument → process only that one PRD (still autonomous, single-PRD mode).
+5. **Parse arguments to set mode + scope:**
+   - `--workhorse` present → workhorse mode (affects cleanup timing in Phase 3/4). Default (absent) → single-machine mode.
+   - Scope: a PRD number argument → process only that one PRD. No number → process **all unblocked PRDs**, one at a time, then stop.
+   - `cleanup <n>` → skip to Phase 4 cleanup for PRD #<n> (do not implement).
 
 ### Phase 2: Implement a PRD (one at a time)
 
 For each selected/unblocked PRD, in order:
 
-6. **Create the worktree + per-PRD branch** off the default branch:
+6. **Create the worktree + per-PRD branch** off the latest remote default branch (fetch first, so a workhorse builds on the planner's latest commits rather than a stale local ref):
 
    ```bash
+   git fetch origin
    mkdir -p .claude/worktrees
-   git worktree add .claude/worktrees/prd-<n> -b prd-<n>-<slug>
+   git worktree add .claude/worktrees/prd-<n> -b prd-<n>-<slug> origin/<default>
    ```
 
    `<slug>` is a kebab slug of the PRD title.
@@ -219,7 +252,22 @@ For each selected/unblocked PRD, in order:
 
 12. **Set labels** on committed feat issues: remove `in-progress`, add `ready-for-review`. Create labels first if missing.
 
-13. **Do NOT merge. Do NOT delete the branch. Do NOT remove the worktree.** Leave `.claude/worktrees/prd-<n>` and branch `prd-<n>-<slug>` intact for the user's local testing.
+13. **Do NOT merge. Do NOT delete the branch.** Branch cleanup is deferred to Phase 4 (after you merge). Worktree cleanup depends on mode:
+
+    - **Single-machine mode:** leave `.claude/worktrees/prd-<n>` intact — it is your local test checkout. (You test in the worktree on the same machine.)
+    - **Workhorse mode:** remove the worktree now — nothing on the workhorse needs it (you test on your laptop by fetching the pushed branch, not here):
+      ```bash
+      git worktree remove .claude/worktrees/prd-<n>
+      ```
+      The local branch `prd-<n>-<slug>` stays until Phase 4 deletes it after merge.
+
+    In both modes, print to the user the laptop-side fetch/test/merge instructions for this PRD:
+    ```bash
+    # On your laptop:
+    git fetch origin prd-<n>-<slug>
+    git checkout prd-<n>-<slug>
+    # run your tests, then merge the MR on the tracker
+    ```
 
 14. **Move to the next unblocked PRD** (Phase 2). When no unblocked PRDs remain, stop and report a summary table:
 
@@ -230,25 +278,25 @@ For each selected/unblocked PRD, in order:
 
 ### Phase 4: Cleanup (after you merge)
 
-15. The skill does **not** auto-clean. Cleanup happens when:
-    - You tell the skill a PRD's MR is merged (e.g. "/afk-prds cleanup #10"), OR
+15. The skill does **not** auto-clean during implementation. Cleanup happens when:
+    - You tell the skill a PRD's MR is merged (`/afk-prds cleanup <n>`), OR
     - You re-run the skill and it detects the PRD issue is now `closed` on the tracker.
 
-    Then, for that PRD:
-    - Propagate any changed `.env`/`.env.*` back to the main working tree (worktrees diverge).
+    First verify the PRD issue is actually `closed` on the tracker before cleaning. Then, for that PRD:
+    - Propagate any changed `.env`/`.env.*` back to the main working tree (worktrees diverge). Skip this in workhorse mode if the worktree is already gone.
 
       ```bash
       for f in .env .env.*; do [ -f ".claude/worktrees/prd-<n>/$f" ] && ! diff -q "$f" ".claude/worktrees/prd-<n>/$f" >/dev/null 2>&1 && cp ".claude/worktrees/prd-<n>/$f" "$f"; done
       ```
 
-    - Remove the worktree and delete the local branch:
+    - Remove the worktree (single-machine mode only — in workhorse mode it was already removed in Phase 3) and delete the local branch:
 
       ```bash
-      git worktree remove .claude/worktrees/prd-<n>
-      git branch -d prd-<n>-<slug>
+      git worktree remove .claude/worktrees/prd-<n> 2>/dev/null  # no-op if already gone (workhorse)
+      git branch -d prd-<n>-<slug>                            # fails safely if the worktree still holds it; retry after worktree remove
       ```
 
-    Never clean up a PRD whose MR is not yet merged — that destroys the user's local test checkout.
+    Never delete a local branch whose MR is not yet merged — you may still need to fetch/test/fix it. In single-machine mode, never remove the worktree before merge either — it is your local test checkout.
 
 ## Policies
 
@@ -309,5 +357,8 @@ Auto-create any missing label before applying (try → on "not found", create wi
 - **PRD has no feat issues** — skip the PRD, report it has no implementable sub-issues.
 - **All of a PRD's feats are HITL/blocked** — do not open an empty MR; report the PRD as fully blocked.
 - **Worktree/branch already exists** for a PRD (interrupted run) — resume in place rather than recreating; check for existing commits before continuing.
+- **Workhorse mode, no `.env` on the workhorse** — red-green fails on DB/external-service tests. Detect missing `.env` before dispatching the first sub-agent and halt with a clear message: "workhorse missing .env — copy your project's .env to the repo root and re-run" rather than letting every feat fail.
+- **Workhorse mode, default branch is behind remote** — `git worktree add -b` off a stale default branch produces a branch missing the planner's recent commits. Before creating the worktree, `git fetch origin` and branch off `origin/<default>` (not the local default ref) so the workhorse builds on the latest remote state.
+- **Branch already merged before cleanup** — if you merged the MR on the tracker and the remote branch was deleted, the local branch may still exist; Phase 4's `git branch -d` cleans it up on next run.
 - **`.env` files gitignored** — they must be propagated back before worktree removal so secrets/config persist; never commit them.
 - **User merges before skill finishes** — fine; the skill detects closed PRD issues and skips/cleans them on re-run.

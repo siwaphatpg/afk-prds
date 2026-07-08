@@ -77,12 +77,38 @@ This skill reads sibling skills via relative paths (`../<skill>/SKILL.md`) and c
 ## Usage
 
 ```
-/afk-prds              # process all unblocked PRDs, one at a time, then stop
-/afk-prds 42           # process only PRD #42 (still autonomous, single-PRD mode)
-/afk-prds cleanup 42   # after you've merged PRD #42's MR: remove its worktree + delete the local branch
+/afk-prds                # process all unblocked PRDs, one at a time, then stop
+/afk-prds 42             # process only PRD #42 (still autonomous)
+/afk-prds cleanup 42     # after you've merged PRD #42's MR: clean up its worktree + local branch
+/afk-prds --workhorse    # workhorse mode: same, but remove each worktree right after its MR opens
+/afk-prds --workhorse 42 # workhorse mode, single PRD
 ```
 
-Then: test locally on the worktree branch, merge the MR on your tracker, and the PRD + feats auto-close.
+Then: test on the branch, merge the MR on your tracker, and the PRD + feats auto-close.
+
+## Single-machine vs workhorse
+
+Issue state lives on the **remote tracker**, so the skill is stateless across machines — every run re-fetches issues from `gh`/`glab`. Two deployment modes:
+
+**Single-machine (default):** you plan, implement, test, and merge all on one machine. The worktree stays after the MR opens so you can test in it.
+
+**Workhorse (`--workhorse`):** split across two machines.
+
+- **Planner machine (e.g. laptop):** runs `/to-prd` → `/to-issues` to create the PRD + `feat:` issues on the remote tracker. (It can also run `/afk-prds` in single-machine mode when you're not splitting.)
+- **Workhorse machine (e.g. a beefy desktop or cloud box):** runs `/afk-prds --workhorse` unattended. It fetches the issues the planner created, builds worktrees, implements each PRD with TDD, pushes the per-PRD branch, opens an MR, then **removes the worktree** (nothing on the workhorse needs it). The branch stays on the remote.
+- **You, back on the laptop:** fetch the branch, test locally, then merge the MR on the tracker:
+  ```
+  git fetch origin prd-<n>-<slug>
+  git checkout prd-<n>-<slug>
+  # run your tests, then merge the MR on GitHub/GitLab
+  ```
+- After merge, re-run `/afk-prds --workhorse` (or `/afk-prds cleanup <n>` on the workhorse) to delete the now-merged local branch.
+
+**Workhorse setup gotchas:**
+- `gh`/`glab` must be authenticated on the workhorse with **its own token** — the planner machine's keyring auth does not transfer.
+- The workhorse needs a clone of the repo with the default branch (worktrees branch off `origin/<default>`).
+- `/setup-matt-pocock-skills` config is committed to the repo (`docs/agents/*`, `CLAUDE.md`/`AGENTS.md`), so `git pull` on the workhorse gets it.
+- **`.env` files are gitignored** and do NOT travel via git. The workhorse must have its own `.env`/`.env.*` (DB creds, API keys) or the TDD test suite fails on anything touching a DB/external service. One-time workhorse setup task.
 
 ## Policies
 
